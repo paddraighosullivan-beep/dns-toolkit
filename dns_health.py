@@ -74,38 +74,58 @@ class Color:
             setattr(cls, attr, "")
 
 
-def build_dns_query(domain: str) -> bytes:
-    """Build a raw DNS A record query packet."""
+def build_dns_query(domain: str) -> tuple:
+    """Build a raw DNS A record query packet. Returns (txn_id, packet_bytes)."""
+    if not domain or not domain.strip():
+        return (0, b"")
     txn_id = random.randint(0, 65535)
     flags = 0x0100
     header = struct.pack(">HHHHHH", txn_id, flags, 1, 0, 0, 0)
     question = b""
     for label in domain.split("."):
-        encoded = label.encode("ascii")
+        if not label:
+            continue
+        try:
+            encoded = label.encode("ascii")
+        except UnicodeEncodeError:
+            try:
+                encoded = label.encode("idna")
+            except (UnicodeError, UnicodeDecodeError):
+                return (0, b"")
+        if len(encoded) > 63:
+            encoded = encoded[:63]
         question += struct.pack("B", len(encoded)) + encoded
     question += b"\x00"
     question += struct.pack(">HH", 1, 1)
-    return header + question
+    return (txn_id, header + question)
 
 
 def dns_query(server: str, domain: str, timeout: float = 3.0) -> Optional[float]:
     """Send DNS query, return latency in ms or None on failure."""
-    query = build_dns_query(domain)
+    txn_id, query = build_dns_query(domain)
+    if not query:
+        return None
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         start = time.perf_counter()
         sock.sendto(query, (server, 53))
-        sock.recvfrom(1024)
+        data, _ = sock.recvfrom(4096)
         elapsed = (time.perf_counter() - start) * 1000
-        sock.close()
+        if len(data) >= 2:
+            resp_id = struct.unpack(">H", data[:2])[0]
+            if resp_id != txn_id:
+                return None
         return elapsed
-    except (socket.timeout, socket.error, OSError):
-        try:
-            sock.close()
-        except Exception:
-            pass
+    except (socket.timeout, socket.error, OSError, Exception):
         return None
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
 
 def check_resolver(server: str, timeout: float = 3.0) -> dict:
@@ -132,7 +152,10 @@ def check_resolver(server: str, timeout: float = 3.0) -> dict:
         }
 
     avg = sum(latencies) / len(latencies)
-    jitter = (sum((x - avg) ** 2 for x in latencies) / len(latencies)) ** 0.5
+    if len(latencies) >= 2:
+        jitter = (sum((x - avg) ** 2 for x in latencies) / len(latencies)) ** 0.5
+    else:
+        jitter = 0.0
 
     if avg > LATENCY_CRITICAL_MS:
         status = "CRITICAL"
@@ -169,7 +192,11 @@ def get_system_dns() -> list:
                         if len(parts) >= 2:
                             ip = parts[1]
                             if ":" not in ip:  # IPv4 only
-                                resolvers.append(ip)
+                                try:
+                                    socket.inet_aton(ip)
+                                    resolvers.append(ip)
+                                except socket.error:
+                                    pass
         except PermissionError:
             pass
 
