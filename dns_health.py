@@ -291,7 +291,7 @@ def log_event(message: str, level: str = "INFO"):
     try:
         with open(LOG_FILE, "a") as f:
             f.write(line + "\n")
-    except PermissionError:
+    except OSError:
         pass
 
 
@@ -300,7 +300,7 @@ def save_state(state: dict):
     try:
         with open(STATE_FILE, "w") as f:
             json.dump(state, f, indent=2)
-    except PermissionError:
+    except OSError:
         pass
 
 
@@ -309,7 +309,7 @@ def load_state() -> dict:
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
@@ -458,7 +458,7 @@ def cmd_monitor(args):
                 if status == "HEALTHY":
                     icon = f"{Color.GREEN}✓{Color.RESET}"
                     consecutive_failures[server] = 0
-                elif status == "DOWN":
+                elif status in ("DOWN", "CRITICAL"):
                     icon = f"{Color.RED}✗{Color.RESET}"
                     consecutive_failures[server] = consecutive_failures.get(server, 0) + 1
                     any_issue = True
@@ -582,6 +582,12 @@ def main():
 
     if args.no_color or not sys.stdout.isatty():
         Color.disable()
+
+    # Validate arguments
+    if args.command == "monitor" and args.interval < 1:
+        parser.error("--interval must be at least 1 second")
+    if args.command == "find-best" and hasattr(args, "top") and args.top < 1:
+        parser.error("--top must be at least 1")
 
     if args.command == "check":
         return cmd_check(args)

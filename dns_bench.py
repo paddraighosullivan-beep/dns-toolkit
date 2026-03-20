@@ -382,16 +382,24 @@ def export_results(results: list, filepath: str, gaming_mode: bool = False):
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "results": results,
         }
-        with open(filepath, "w") as f:
-            json.dump(output, f, indent=2)
+        try:
+            with open(filepath, "w") as f:
+                json.dump(output, f, indent=2)
+        except (OSError, IOError) as e:
+            print(f"{Color.RED}Error writing {filepath}: {e}{Color.RESET}")
+            return
     elif filepath.endswith(".csv"):
         fields = ["server", "display_name", "avg_ms", "min_ms", "max_ms", "jitter_ms", "reliability", "status"]
         if gaming_mode:
             fields.append("gaming_score")
-        with open(filepath, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(results)
+        try:
+            with open(filepath, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(results)
+        except (OSError, IOError) as e:
+            print(f"{Color.RED}Error writing {filepath}: {e}{Color.RESET}")
+            return
     else:
         print(f"{Color.RED}Error: Export format must be .json or .csv{Color.RESET}")
         return
@@ -420,6 +428,16 @@ def main():
     parser.add_argument("--custom", type=str, help="Comma-separated list of custom DNS servers to test")
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if args.top < 1:
+        parser.error("--top must be at least 1")
+    if args.rounds < 1:
+        parser.error("--rounds must be at least 1")
+    if args.timeout <= 0:
+        parser.error("--timeout must be greater than 0")
+    if args.threads < 1:
+        parser.error("--threads must be at least 1")
 
     if args.no_color or not sys.stdout.isatty():
         Color.disable()
@@ -501,7 +519,16 @@ def main():
 
         for future in as_completed(futures):
             r_info = futures[future]
-            result = future.result()
+            try:
+                result = future.result()
+            except Exception:
+                result = {
+                    "server": r_info.get("ip", "unknown"),
+                    "avg_ms": float("inf"), "min_ms": float("inf"),
+                    "max_ms": float("inf"), "jitter_ms": float("inf"),
+                    "reliability": 0.0, "queries": 0, "failures": 0,
+                    "status": "TIMEOUT",
+                }
             result["org"] = r_info.get("org", "")
             result["country"] = r_info.get("country", "")
             result["dnssec"] = r_info.get("dnssec", False)
